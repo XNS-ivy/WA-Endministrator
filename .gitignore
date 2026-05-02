@@ -145,3 +145,6 @@ vite.config.ts.timestamp-*
 # ignore test file
 test
 test.*
+
+# databases
+auth.db

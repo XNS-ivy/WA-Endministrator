@@ -1,5 +1,4 @@
-import Database from 'better-sqlite3'
-
+import { Database } from 'bun:sqlite'
 import {
     type AuthenticationState,
     type AuthenticationCreds,
@@ -29,7 +28,7 @@ export async function useSQLiteAuthState(folder: string): Promise<{
     // --- helpers (similar to readData/writeData in useMultiFileAuthState) ---
 
     const readData = (keyType: string, keyId: string) => {
-        const row = db.prepare(
+        const row = db.query(
             `SELECT value FROM auth_sessions
              WHERE key_type = ? AND key_id = ?`
         ).get(keyType, keyId) as { value: string } | undefined
@@ -39,7 +38,7 @@ export async function useSQLiteAuthState(folder: string): Promise<{
     }
 
     const writeData = (keyType: string, keyId: string, value: any) => {
-        db.prepare(
+        db.query(
             `INSERT INTO auth_sessions (key_type, key_id, value)
              VALUES (?, ?, ?)
              ON CONFLICT (key_type, key_id)
@@ -48,14 +47,10 @@ export async function useSQLiteAuthState(folder: string): Promise<{
     }
 
     const deleteData = (keyType: string, keyId: string) => {
-        db.prepare(
+        db.query(
             `DELETE FROM auth_sessions
              WHERE key_type = ? AND key_id = ?`
         ).run(keyType, keyId)
-    }
-
-    const clearAll = () => {
-        db.prepare(`DELETE FROM auth_sessions`).run()
     }
 
     // --- load or init creds (same as useMultiFileAuthState) ---
@@ -74,7 +69,6 @@ export async function useSQLiteAuthState(folder: string): Promise<{
                     }
                     return data
                 },
-
                 set: (data: SignalDataSet) => {
                     // use transaction to make it atomic, same as useMultiFileAuthState
                     const upsertMany = db.transaction(() => {
@@ -89,7 +83,7 @@ export async function useSQLiteAuthState(folder: string): Promise<{
                     upsertMany()
                 },
                 clear: () => {
-                    clearAll()
+                    db.query(`DELETE FROM auth_sessions`).run()
                 }
             }
         },
