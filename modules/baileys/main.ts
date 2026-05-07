@@ -4,8 +4,30 @@ import pino from 'pino'
 import qrcode from 'qrcode-terminal'
 import { useSQLiteAuthState } from '@modules/databases/auth-sqlite'
 import { Boom } from '@hapi/boom'
+import { existsSync, unlinkSync } from 'fs'
 
 import type { ConnectionState } from 'baileys'
+
+/**
+ * WhatsApp client wrapper using Baileys library for WhatsApp Web automation.
+ * Handles socket connection, authentication, reconnection logic, and event management.
+ * 
+ * @class Whatsapp
+ * 
+ * @property {ReturnType<typeof makeWASocket> | null} sock - The WASocket instance for WhatsApp communication
+ * @property {NodeCache} groupCache - Cache for group metadata with 120-minute TTL
+ * @property {number} reconnectAttempts - Current number of reconnection attempts
+ * @property {number} MAX_RECONNECT_ATTEMPTS - Maximum allowed reconnection attempts (5)
+ * @property {string} authFileName - Name of the authentication database file
+ * @property {(() => Promise<void>) | null} saveCreds - Function to persist authentication credentials
+ * 
+ * @method startWhatsapp - Initializes the WhatsApp socket and event listeners
+ * @method initSocket - Creates and configures the WASocket instance with authentication state
+ * @method startEvents - Registers event handlers for credentials and connection state changes
+ * @method handleReconnect - Implements exponential backoff reconnection logic with max attempt limit
+ * @method deleteSession - Removes the authentication database file to force re-authentication
+ * @method cleanup - Gracefully closes socket connections and removes event listeners
+ */
 
 class Whatsapp {
     private sock: ReturnType<typeof makeWASocket> | null = null
@@ -14,17 +36,20 @@ class Whatsapp {
         deleteOnExpire: true,
         useClones: false,
     })
+    private reconnectAttempts = 0
+    private readonly MAX_RECONNECT_ATTEMPTS = 5
+    private authFileName = 'auth'
     private saveCreds: (() => Promise<void>) | null = null
 
     constructor() { }
 
-    async startWhatsapp() {
+    async startWhatsapp(phoneNumber: string | null | undefined) {
         await this.initSocket()
         await this.startEvents()
     }
 
     private async initSocket() {
-        const { state, saveCreds } = await useSQLiteAuthState('auth')
+        const { state, saveCreds } = await useSQLiteAuthState(this.authFileName)
         const logger = pino({ level: 'silent' })
         this.sock = makeWASocket({
             auth: state,
@@ -51,22 +76,59 @@ class Whatsapp {
 
             if (connection === 'close') {
                 const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode
-                const shouldReconnect = statusCode !== DisconnectReason.loggedOut
 
-                console.log('Connection closed, status:', statusCode, '| reconnect:', shouldReconnect)
-                if (shouldReconnect && statusCode !== 405) {
-                    await this.startWhatsapp()
-                } else if (statusCode === 405) {
-                    console.log('WhatsApp Rejected (405), wait a few minutes before reconnecting...')
-                    setTimeout(() => this.startWhatsapp(), 30_000)
+                switch (statusCode) {
+                    case DisconnectReason.loggedOut:
+                        logger.warn('/modules/baileys/main.ts', 'Logged out. Deleting session...')
+                        this.deleteSession()
+                        break
+                    case DisconnectReason.badSession:
+                        logger.warn('/modules/baileys/main.ts', 'Bad session. Deleting session...')
+                        this.deleteSession()
+                        break
+                    case DisconnectReason.restartRequired:
+                        logger.info('/modules/baileys/main.ts', 'Restart required. Reconnecting...')
+                        await this.startWhatsapp(null)
+                        break
+                    case 405:
+                        logger.warn('/modules/baileys/main.ts', 'WA rejected (405), retrying in 30s...')
+                        setTimeout(() => this.startWhatsapp(null), 30_000)
+                        break
+                    default:
+                        await this.handleReconnect()
                 }
-
-            } else if (connection === 'open') {
-                console.log('Koneksi berhasil!')
+            }
+            else if (connection === 'open') {
+                logger.info('/modules/baileys/main.ts', 'connected')
             }
         })
     }
-}
+    private async handleReconnect() {
+        if (this.reconnectAttempts >= this.MAX_RECONNECT_ATTEMPTS) {
+            logger.warn('/modules/baileys/main.ts', 'Max reconnect attempts reached. Stopping.')
+            return
+        }
 
+        const delay = Math.min(1000 * 2 ** this.reconnectAttempts, 60_000) // cap 60s
+        this.reconnectAttempts++
+        console.log(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})...`)
+        setTimeout(() => this.startWhatsapp(null), delay)
+    }
+    private deleteSession() {
+        const dbPath = `./${this.authFileName}.db`
+        if (existsSync(dbPath)) {
+            unlinkSync(dbPath)
+            logger.info('/modules/baileys/main.ts', 'Session deleted. Please scan QR again.')
+        }
+    }
+    private cleanup() {
+        if (this.sock) {
+            this.sock.ev.removeAllListeners('creds.update')
+            this.sock.ev.removeAllListeners('connection.update')
+            this.sock.ws.close()
+            this.sock = null
+        }
+    }
+}
 const WAEndmin = new Whatsapp()
 export default WAEndmin

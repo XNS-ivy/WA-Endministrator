@@ -31,14 +31,17 @@
     // project modules path
     "types": ["bun"],
     "paths": {
+      "@utils/*": ["./utils/*"],
       "@modules/*": ["./modules/*"]
     }
   },
+  "typeRoots": ["./types", "./node_modules/@types"],
   "include": [
     "**/*.ts",
     "**/*.tsx",
     "**/*.js",
-    "**/*.jsx"
+    "**/*.jsx",
+    ",/**/*.ts"
   ],
   "exclude": [
     "node_modules"
