@@ -8,27 +8,6 @@ import { existsSync, unlinkSync } from 'fs'
 import { registerMessageProcessing } from '@modules/baileys/message-processing'
 import type { ConnectionState } from 'baileys'
 
-/**
- * WhatsApp client wrapper using Baileys library for WhatsApp Web automation.
- * Handles socket connection, authentication, reconnection logic, and event management.
- * 
- * @class Whatsapp
- * 
- * @property {ReturnType<typeof makeWASocket> | null} sock - The WASocket instance for WhatsApp communication
- * @property {NodeCache} groupCache - Cache for group metadata with 120-minute TTL
- * @property {number} reconnectAttempts - Current number of reconnection attempts
- * @property {number} MAX_RECONNECT_ATTEMPTS - Maximum allowed reconnection attempts (5)
- * @property {string} authFileName - Name of the authentication database file
- * @property {(() => Promise<void>) | null} saveCreds - Function to persist authentication credentials
- * 
- * @method startWhatsapp - Initializes the WhatsApp socket and event listeners
- * @method initSocket - Creates and configures the WASocket instance with authentication state
- * @method startEvents - Registers event handlers for credentials and connection state changes
- * @method handleReconnect - Implements exponential backoff reconnection logic with max attempt limit
- * @method deleteSession - Removes the authentication database file to force re-authentication
- * @method cleanup - Gracefully closes socket connections and removes event listeners
- */
-
 class Whatsapp {
     private sock: ReturnType<typeof makeWASocket> | null = null
     private groupCache = new NodeCache({
@@ -40,6 +19,7 @@ class Whatsapp {
     private readonly MAX_RECONNECT_ATTEMPTS = 5
     private authFileName = 'auth'
     private saveCreds: (() => Promise<void>) | null = null
+    private closeDb: (() => void) | null = null
 
     constructor() { }
 
@@ -49,7 +29,7 @@ class Whatsapp {
     }
 
     private async initSocket() {
-        const { state, saveCreds } = await useSQLiteAuthState(this.authFileName)
+        const { state, saveCreds, closeDb } = await useSQLiteAuthState(this.authFileName)
         const pinoLogger = pino({ level: 'silent' })
         this.sock = makeWASocket({
             auth: state,
@@ -62,6 +42,7 @@ class Whatsapp {
         })
 
         this.saveCreds = saveCreds
+        this.closeDb = closeDb
     }
 
     private async startEvents() {
@@ -83,12 +64,10 @@ class Whatsapp {
                     case DisconnectReason.loggedOut:
                         logger.warn('/modules/baileys/main.ts', 'Logged out. Deleting session...')
                         this.deleteSession()
-                        this.startWhatsapp(null)
                         break
                     case DisconnectReason.badSession:
                         logger.warn('/modules/baileys/main.ts', 'Bad session. Deleting session...')
                         this.deleteSession()
-                        this.startWhatsapp(null)
                         break
                     case DisconnectReason.restartRequired:
                         logger.info('/modules/baileys/main.ts', 'Restart required. Reconnecting...')
@@ -109,25 +88,28 @@ class Whatsapp {
 
         registerMessageProcessing(this.sock, {
             onMessage: async (parsed) => {
-                // parsed: IMessageFetch — command sudah di-parse, quoted sudah di-resolve
                 // TODO: dispatch ke command handler
-                logger.debug('/modules/baileys/main.ts', {parsed})
+                logger.debug('/modules/baileys/main.ts', {
+                    parsed
+                })
             },
 
             onRevoke: async ({ remoteJid, deletedMessageId, revokedBy }) => {
-                // TODO: anti-delete — cek groupConfig, forward pesan yang dihapus
+                // TODO: anti-delete
+                logger.info('/modules/baileys/main.ts', 'deleted message')
             },
 
             onEdit: async ({ remoteJid, originalMessageId, newText, editorJid }) => {
-                // TODO: anti-edit — cek groupConfig, kirim notif pesan yang diedit
+                // TODO: anti-edit
+                logger.info('/modules/baileys/main.ts', 'edited message')
             },
 
             onEphemeralSetting: async ({ remoteJid, ephemeralExpiration }) => {
-                logger.info('/modules/baileys/main.ts', `Disappearing messages: ${ephemeralExpiration}s in ${remoteJid}`)
+                logger.info('//modules/baileys/main.ts', `Disappearing messages: ${ephemeralExpiration}s in ${remoteJid}`)
             },
 
             onProtocolOther: async ({ type, remoteJid }) => {
-                // logger.debug('modules/baileys/main', { protocolType: type, remoteJid })
+                // logger.debug('/modules/baileys/main.ts', { protocolType: type, remoteJid })
             },
         })
     }
@@ -146,10 +128,16 @@ class Whatsapp {
     }
 
     private deleteSession() {
+        // Close the DB connection first — Bun/Windows locks the file
+        // and unlinkSync throws EBUSY if the connection is still open
+        this.closeDb?.()
+        this.closeDb = null
+
         const dbPath = `./${this.authFileName}.db`
         if (existsSync(dbPath)) {
             unlinkSync(dbPath)
             logger.info('/modules/baileys/main.ts', 'Session deleted. Please scan QR again.')
+            setTimeout(() => this.startWhatsapp(null), 3000)
         }
     }
 
@@ -161,6 +149,8 @@ class Whatsapp {
             this.sock.ws.close()
             this.sock = null
         }
+        this.closeDb?.()
+        this.closeDb = null
     }
 }
 

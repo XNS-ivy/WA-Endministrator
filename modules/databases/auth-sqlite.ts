@@ -11,11 +11,10 @@ import {
 export async function useSQLiteAuthState(folder: string): Promise<{
     state: AuthenticationState
     saveCreds: () => Promise<void>
+    closeDb: () => void
 }> {
-    // We use the folder here as the name of the .db file
     const db = new Database(`${folder}.db`)
 
-    // create a table if it doesn't exist
     db.exec(`
         CREATE TABLE IF NOT EXISTS auth_sessions (
             key_type TEXT NOT NULL,
@@ -24,8 +23,6 @@ export async function useSQLiteAuthState(folder: string): Promise<{
             PRIMARY KEY (key_type, key_id)
         )
     `)
-
-    // --- helpers (similar to readData/writeData in useMultiFileAuthState) ---
 
     const readData = (keyType: string, keyId: string) => {
         const row = db.query(
@@ -53,8 +50,6 @@ export async function useSQLiteAuthState(folder: string): Promise<{
         ).run(keyType, keyId)
     }
 
-    // --- load or init creds (same as useMultiFileAuthState) ---
-
     let creds: AuthenticationCreds = readData('creds', 'default') || initAuthCreds()
 
     return {
@@ -70,7 +65,6 @@ export async function useSQLiteAuthState(folder: string): Promise<{
                     return data
                 },
                 set: (data: SignalDataSet) => {
-                    // use transaction to make it atomic, same as useMultiFileAuthState
                     const upsertMany = db.transaction(() => {
                         for (const [type, ids] of Object.entries(data)) {
                             for (const [id, value] of Object.entries(ids!)) {
@@ -88,9 +82,13 @@ export async function useSQLiteAuthState(folder: string): Promise<{
             }
         },
 
-        // async like useMultiFileAuthState
         saveCreds: async () => {
             writeData('creds', 'default', creds)
+        },
+
+        /** Close the SQLite connection — call this before deleting the .db file */
+        closeDb: () => {
+            db.close()
         }
     }
 }
