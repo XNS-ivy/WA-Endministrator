@@ -1,11 +1,11 @@
 import "@utils/logger"
-import WAEndmin from "@modules/baileys/main"
+import Hoshino from "@modules/baileys/main"
 
 // need future update can be scan from frontend or connect from frontend or see command aka web console
-const statisPhoneNumber = null
+const staticPhoneNumber = null
 
 async function start() {
-    await WAEndmin.startWhatsapp(statisPhoneNumber)
+    await Hoshino.startWhatsapp(staticPhoneNumber)
 }
 
 start().catch(console.error)

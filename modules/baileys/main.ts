@@ -5,7 +5,7 @@ import qrcode from 'qrcode-terminal'
 import { useSQLiteAuthState } from '@modules/databases/auth-sqlite'
 import { Boom } from '@hapi/boom'
 import { existsSync, unlinkSync } from 'fs'
-
+import { registerMessageProcessing } from '@modules/baileys/message-processing'
 import type { ConnectionState } from 'baileys'
 
 /**
@@ -50,13 +50,13 @@ class Whatsapp {
 
     private async initSocket() {
         const { state, saveCreds } = await useSQLiteAuthState(this.authFileName)
-        const logger = pino({ level: 'silent' })
+        const pinoLogger = pino({ level: 'silent' })
         this.sock = makeWASocket({
             auth: state,
             markOnlineOnConnect: false,
             cachedGroupMetadata: async (jid) => this.groupCache.get(jid),
             getMessage: async (key) => { return undefined },
-            logger,
+            logger: pinoLogger,
             browser: Browsers.appropriate('Google Chrome'),
             version: (await fetchLatestWaWebVersion()).version
         })
@@ -66,9 +66,11 @@ class Whatsapp {
 
     private async startEvents() {
         if (!this.sock) throw new Error('Socket Not Started Yet')
+
         this.sock.ev.on('creds.update', this.saveCreds!)
+
         this.sock.ev.on('connection.update', async (connectionState: Partial<ConnectionState>) => {
-            const { connection, lastDisconnect, qr, isNewLogin, isOnline } = connectionState
+            const { connection, lastDisconnect, qr } = connectionState
 
             if (qr) {
                 qrcode.generate(qr, { small: true })
@@ -81,10 +83,12 @@ class Whatsapp {
                     case DisconnectReason.loggedOut:
                         logger.warn('/modules/baileys/main.ts', 'Logged out. Deleting session...')
                         this.deleteSession()
+                        this.startWhatsapp(null)
                         break
                     case DisconnectReason.badSession:
                         logger.warn('/modules/baileys/main.ts', 'Bad session. Deleting session...')
                         this.deleteSession()
+                        this.startWhatsapp(null)
                         break
                     case DisconnectReason.restartRequired:
                         logger.info('/modules/baileys/main.ts', 'Restart required. Reconnecting...')
@@ -97,23 +101,50 @@ class Whatsapp {
                     default:
                         await this.handleReconnect()
                 }
-            }
-            else if (connection === 'open') {
-                logger.info('/modules/baileys/main.ts', 'connected')
+            } else if (connection === 'open') {
+                this.reconnectAttempts = 0
+                logger.info('/modules/baileys/main.ts', 'Connected')
             }
         })
+
+        registerMessageProcessing(this.sock, {
+            onMessage: async (parsed) => {
+                // parsed: IMessageFetch — command sudah di-parse, quoted sudah di-resolve
+                // TODO: dispatch ke command handler
+                logger.debug('/modules/baileys/main.ts', {parsed})
+            },
+
+            onRevoke: async ({ remoteJid, deletedMessageId, revokedBy }) => {
+                // TODO: anti-delete — cek groupConfig, forward pesan yang dihapus
+            },
+
+            onEdit: async ({ remoteJid, originalMessageId, newText, editorJid }) => {
+                // TODO: anti-edit — cek groupConfig, kirim notif pesan yang diedit
+            },
+
+            onEphemeralSetting: async ({ remoteJid, ephemeralExpiration }) => {
+                logger.info('/modules/baileys/main.ts', `Disappearing messages: ${ephemeralExpiration}s in ${remoteJid}`)
+            },
+
+            onProtocolOther: async ({ type, remoteJid }) => {
+                // logger.debug('modules/baileys/main', { protocolType: type, remoteJid })
+            },
+        })
     }
+
     private async handleReconnect() {
         if (this.reconnectAttempts >= this.MAX_RECONNECT_ATTEMPTS) {
             logger.warn('/modules/baileys/main.ts', 'Max reconnect attempts reached. Stopping.')
-            return
+            this.cleanup()
+            process.exit(1)
         }
 
-        const delay = Math.min(1000 * 2 ** this.reconnectAttempts, 60_000) // cap 60s
+        const delay = Math.min(1000 * 2 ** this.reconnectAttempts, 60_000)
         this.reconnectAttempts++
-        console.log(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})...`)
+        logger.info('/modules/baileys/main.ts', `Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})...`)
         setTimeout(() => this.startWhatsapp(null), delay)
     }
+
     private deleteSession() {
         const dbPath = `./${this.authFileName}.db`
         if (existsSync(dbPath)) {
@@ -121,14 +152,17 @@ class Whatsapp {
             logger.info('/modules/baileys/main.ts', 'Session deleted. Please scan QR again.')
         }
     }
+
     private cleanup() {
         if (this.sock) {
             this.sock.ev.removeAllListeners('creds.update')
             this.sock.ev.removeAllListeners('connection.update')
+            this.sock.ev.removeAllListeners('messages.upsert')
             this.sock.ws.close()
             this.sock = null
         }
     }
 }
-const WAEndmin = new Whatsapp()
-export default WAEndmin
+
+const Hoshino = new Whatsapp()
+export default Hoshino
