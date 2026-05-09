@@ -6,6 +6,7 @@ import type { IMessageFetch } from './msg-parse'
 // ─── Shorthand ────────────────────────────────────────────────────────────────
 
 const PMType = proto.Message.ProtocolMessage.Type
+const SecretEncType = proto.Message.SecretEncryptedMessage.SecretEncType
 
 // ─── Per-type payload interfaces ──────────────────────────────────────────────
 
@@ -21,7 +22,11 @@ export interface IOnEditPayload {
     remoteJid: string
     /** ID of the original message that was replaced */
     originalMessageId: string
-    /** New text after the edit — null for non-text messages */
+    /**
+     * New text after the edit.
+     * null when the edit came in as a secretEncryptedMessage (encrypted payload
+     * that cannot be decoded) — the edit still happened, text is just unavailable.
+     */
     newText: string | null
     editorJid: string
 }
@@ -96,6 +101,9 @@ export interface IMessageProcessingCallbacks {
      * Delegates to MessageParse.fetch() — full pipeline:
      * unwrap ephemeral/viewOnce, extract text/caption, resolve quoted,
      * parse command, convert LID.
+     *
+     * protocolMessage and secretEncryptedMessage are intercepted before
+     * this is ever reached.
      */
     onMessage?: (parsed: IMessageFetch) => Promise<void>
 
@@ -104,7 +112,14 @@ export interface IMessageProcessingCallbacks {
     /** A message was deleted/revoked */
     onRevoke?: (payload: IOnRevokePayload) => Promise<void>
 
-    /** A message was edited */
+    /**
+     * A message was edited.
+     *
+     * Two sources trigger this callback:
+     * - `protocolMessage` with `MESSAGE_EDIT` — newText is available
+     * - `secretEncryptedMessage` with `MESSAGE_EDIT` — newText is null
+     *   (encrypted, cannot be decoded, but originalMessageId is still valid)
+     */
     onEdit?: (payload: IOnEditPayload) => Promise<void>
 
     /** Disappearing messages setting changed in a chat */
@@ -149,15 +164,10 @@ export interface IMessageProcessingCallbacks {
  * import { registerMessageProcessing } from '@modules/baileys/message-processing'
  *
  * registerMessageProcessing(this.sock, {
- *     onMessage: async (parsed) => {
- *         if (!parsed.commandContent) return
- *         // dispatch to command handler...
- *     },
- *     onRevoke: async ({ remoteJid, deletedMessageId, revokedBy }) => {
- *         // anti-delete logic here
- *     },
- *     onEdit: async ({ remoteJid, originalMessageId, newText }) => {
- *         // anti-edit logic here
+ *     onMessage: async (parsed) => { ... },
+ *     onRevoke:  async ({ remoteJid, deletedMessageId }) => { ... },
+ *     onEdit:    async ({ remoteJid, originalMessageId, newText }) => {
+ *         // newText may be null for encrypted edits — handle both cases
  *     },
  * })
  * ```
@@ -194,16 +204,50 @@ async function processOne(
     const { message, key } = msg
     if (!message || !key.remoteJid) return
 
-    const protocol = message.protocolMessage
-    if (protocol) {
-        await routeProtocol(key, protocol, callbacks)
+    // ── protocolMessage ───────────────────────────────────────────────────────
+    if (message.protocolMessage) {
+        await routeProtocol(key, message.protocolMessage, callbacks)
         return
     }
 
+    // ── secretEncryptedMessage ────────────────────────────────────────────────
+    // Encrypted edits (MESSAGE_EDIT) and event edits (EVENT_EDIT) — payload
+    // cannot be decoded, but we can still surface the edit event with the
+    // target message ID so anti-edit logic can act on it.
+    if (message.secretEncryptedMessage) {
+        await routeSecretEncrypted(key, message.secretEncryptedMessage, callbacks)
+        return
+    }
+
+    // ── Regular messages ──────────────────────────────────────────────────────
     if (!callbacks.onMessage) return
 
     const parsed = await msgParser.fetch(msg)
     if (parsed) await callbacks.onMessage(parsed)
+}
+
+async function routeSecretEncrypted(
+    key: WAMessage['key'],
+    secret: proto.Message.ISecretEncryptedMessage,
+    cb: IMessageProcessingCallbacks
+): Promise<void> {
+    if (!cb.onEdit) return
+
+    const encType = secret.secretEncType
+    if (encType !== SecretEncType.MESSAGE_EDIT) return
+
+    // targetMessageKey.id is the ID of the message that was edited
+    const originalMessageId = secret.targetMessageKey?.id
+    if (!originalMessageId || !key.remoteJid) return
+
+    const senderJid = key.participant ?? key.remoteJid
+
+    await cb.onEdit({
+        remoteJid: key.remoteJid,
+        originalMessageId,
+        newText: null, // encrypted — cannot be decoded
+        editorJid: senderJid,
+    })
 }
 
 async function routeProtocol(
@@ -213,7 +257,9 @@ async function routeProtocol(
 ): Promise<void> {
     const pmType = protocol.type
     if (pmType == null) return
+
     const remoteJid = key.remoteJid!
+    // Groups: key.participant is the actual sender; DMs: fall back to remoteJid
     const senderJid = key.participant ?? remoteJid
 
     switch (pmType) {

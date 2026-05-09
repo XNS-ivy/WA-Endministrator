@@ -1,43 +1,42 @@
 import { type WAMessage, type proto, type WAMessageKey, getContentType } from "baileys"
-import { config as conf } from "@utils/system-config"
+import { config } from "@utils/system-config"
 
 
 export class MessageParse {
-    // protocolMessage is intentionally excluded from this list —
-    // it is intercepted upstream in message-processing.ts before fetch() is
-    // ever called, so it will never reach here in normal flow.
+    // protocolMessage is intentionally excluded — intercepted upstream in
+    // message-processing.ts before fetch() is ever called.
+    //
+    // secretEncryptedMessage is excluded because its payload is encrypted
+    // and cannot be decoded here; MESSAGE_EDIT variants are routed to
+    // onEdit (with newText: null) in message-processing.ts instead.
     private static denied: (keyof proto.IMessage)[] = [
         "senderKeyDistributionMessage",
         "messageContextInfo",
+        "secretEncryptedMessage",
     ]
-    private config = conf
-
+    
     /**
-     * Fetches and parses a WhatsApp message into a structured format.
+     * Fetches and parses a WhatsApp message, extracting relevant content and metadata.
      * 
-     * @param msg - The raw WhatsApp message to parse
-     * @returns A promise that resolves to a parsed message object with extracted metadata,
-     *          or null if the message is invalid or should be ignored
-     * 
-     * @description
-     * This method processes a WAMessage by:
-     * - Validating the message has required fields (content and sender name)
-     * - Filtering out system messages (status broadcasts)
-     * - Extracting message content based on type (text, extended text, media with caption, etc.)
-     * - Parsing command syntax if the message starts with the configured prefix
-     * - Resolving quoted messages recursively
-     * - Determining if the message is from a group chat
+     * @param msg - The WhatsApp message to parse
+     * @returns A promise that resolves to an IMessageFetch object containing parsed message data,
+     *          or null if the message is invalid or should be skipped
      * 
      * @remarks
-     * Returns null if:
-     * - Message or pushName is missing
-     * - Message is from status@broadcast
-     * - remoteJid is missing or invalid
-     * - Message content cannot be unwrapped
-     * - Message type cannot be determined
-     * - Converted LID is invalid
+     * - Filters out denied message types
+     * - Extracts text, caption, and description based on message type
+     * - Parses command content if message starts with configured prefix
+     * - Handles quoted messages recursively
+     * - Detects group messages vs direct messages
+     * 
+     * @example
+     * ```typescript
+     * const parsedMsg = await msgParser.fetch(waMessage);
+     * if (parsedMsg?.commandContent) {
+     *   console.log(`Command: ${parsedMsg.commandContent.cmd}`);
+     * }
+     * ```
      */
-
     async fetch(msg: WAMessage): Promise<IMessageFetch | null> {
 
         const { key, pushName, message } = msg
@@ -63,11 +62,13 @@ export class MessageParse {
         if (!messageObject) return null
         const content = res[messageObject]
         if (!content) return null
+
         let textMsg: string | null = null
         let caption: string | null = null
         let description: string | null = null
         let contextInfo: proto.IContextInfo | undefined
         let expiration = 0
+
         if (messageObject === 'conversation') {
             textMsg = content as string
         }
@@ -96,7 +97,7 @@ export class MessageParse {
             ? await this.quotedMessageFetch(quotedMessage)
             : null
         const isOnGroup = remoteJid.endsWith('@g.us') ? true : false
-        const prefix = await this.config.get('prefix')
+        const prefix = config.get('prefix')
         const body: string = textMsg ?? caption ?? ""
         let commandContent: null | { cmd: string; args: string[] } = null
         if (body?.startsWith(prefix)) {
@@ -235,6 +236,7 @@ interface IQuotedMessage {
 export const message = new MessageParse()
 
 type MessageContent<T extends keyof proto.IMessage> = proto.IMessage[T]
+
 
 function unwrapMessage(msg: proto.IMessage | undefined | null): proto.IMessage | null {
     if (!msg) return null

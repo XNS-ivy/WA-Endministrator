@@ -89,9 +89,9 @@ class Whatsapp {
         registerMessageProcessing(this.sock, {
             onMessage: async (parsed) => {
                 // TODO: dispatch ke command handler
-                logger.debug('/modules/baileys/main.ts', {
-                    parsed
-                })
+                if(parsed.commandContent?.cmd!){
+                    console.log('trigger command processing')
+                }
             },
 
             onRevoke: async ({ remoteJid, deletedMessageId, revokedBy }) => {
@@ -100,8 +100,8 @@ class Whatsapp {
             },
 
             onEdit: async ({ remoteJid, originalMessageId, newText, editorJid }) => {
-                // TODO: anti-edit
-                logger.info('/modules/baileys/main.ts', 'edited message')
+                // TODO: anti-edit but its still [object]
+                logger.info('/modules/baileys/main.ts', `edited message`)
             },
 
             onEphemeralSetting: async ({ remoteJid, ephemeralExpiration }) => {
@@ -141,7 +141,7 @@ class Whatsapp {
         }
     }
 
-    private cleanup() {
+    private async cleanup() {
         if (this.sock) {
             this.sock.ev.removeAllListeners('creds.update')
             this.sock.ev.removeAllListeners('connection.update')
