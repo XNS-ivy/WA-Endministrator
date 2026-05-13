@@ -3,6 +3,8 @@ import NodeCache from 'node-cache'
 import pino from 'pino'
 import qrcode from 'qrcode-terminal'
 import { useSQLiteAuthState } from '@modules/databases/auth-sqlite'
+import { ownerDb } from '@modules/databases/owner-sqlite'
+import { groupDb } from '@modules/databases/group-sqlite'
 import { Boom } from '@hapi/boom'
 import { existsSync, unlinkSync } from 'fs'
 import { registerMessageProcessing } from '@modules/baileys/message-processing'
@@ -148,6 +150,8 @@ class Whatsapp {
         // and unlinkSync throws EBUSY if the connection is still open
         this.closeDb?.()
         this.closeDb = null
+        ownerDb.close()
+        groupDb.close()
 
         const dbPath = `./${this.authFileName}.db`
         if (existsSync(dbPath)) {
@@ -167,6 +171,10 @@ class Whatsapp {
         }
         this.closeDb?.()
         this.closeDb = null
+        ownerDb.save()
+        ownerDb.close()
+        groupDb.save()
+        groupDb.close()
     }
 }
 
