@@ -148,3 +148,5 @@ test.*
 
 # databases
 auth.db
+owner.db
+group.db

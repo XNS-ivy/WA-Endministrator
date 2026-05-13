@@ -1,5 +1,7 @@
 import { type WAMessage, type proto, type WAMessageKey, getContentType, type WASocket } from "baileys"
 import { config } from "@utils/system-config"
+import { ownerDb, type OwnerRole } from "@modules/databases/owner-sqlite"
+import { groupDb } from "@modules/databases/group-sqlite"
 
 
 export class MessageParse {
@@ -114,6 +116,39 @@ export class MessageParse {
         }
         const convertedLid = convertLID(lid)
         if (!lid) return null
+
+        // ── Owner check ───────────────────────────────────────────────────────
+        // Try convertedLid first (numeric-only), then full JID as fallback
+        const senderJid = key.participant ?? remoteJid
+        const ownerLookup = convertedLid ?? senderJid
+        const ownerRole: OwnerRole | null = ownerDb.getRole(ownerLookup)
+        const isOwner: boolean = ownerRole !== null
+
+        // ── Group admin check ─────────────────────────────────────────────────
+        // Only meaningful in groups; always false in DMs
+        let isAdmin = false
+        if (isOnGroup) {
+            try {
+                const meta = await sock.groupMetadata(remoteJid)
+                const participant = meta.participants.find(
+                    p => p.id === senderJid || p.id === key.participant
+                )
+                isAdmin = participant?.admin === 'admin' || participant?.admin === 'superadmin'
+            } catch {
+                // groupMetadata can fail if bot was just added — safe to skip
+                isAdmin = false
+            }
+        }
+
+        // ── Group allowlist check ─────────────────────────────────────────────
+        // DMs are always allowed (isOnGroup is false → true).
+        // Group messages are allowed only if the group JID is registered in the
+        // allowlist via groupDb.  Callers should gate command execution behind
+        // this flag so the bot cannot be used in unregistered groups.
+        const isGroupAllowed: boolean = isOnGroup
+            ? groupDb.isAllowed(remoteJid)
+            : true
+
         return {
             remoteJid,
             lid,
@@ -131,7 +166,11 @@ export class MessageParse {
             raw: msg,
             rawQuoted: quotedMessage ?? null,
             commandContent,
-            convertedLid
+            convertedLid,
+            isOwner,
+            ownerRole,
+            isAdmin,
+            isGroupAllowed,
         }
     }
 
@@ -220,6 +259,18 @@ export interface IMessageFetch extends IKeyFetch {
         args: Array<string>,
     }
     convertedLid: string | null,
+    /** True if sender is registered in the owner database (any role) */
+    isOwner: boolean,
+    /** 'master' | 'owner' | null — null means not an owner */
+    ownerRole: OwnerRole | null,
+    /** True if sender is group admin or superadmin (always false in DMs) */
+    isAdmin: boolean,
+    /**
+     * True when the message is from a DM, or from a group that has been
+     * registered in the allowlist by an owner (groupDb.allow()).
+     * False means the group is not registered — commands should be blocked.
+     */
+    isGroupAllowed: boolean,
     // add more type here if needed
 }
 

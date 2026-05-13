@@ -6,6 +6,7 @@ import { resolve } from 'path'
 export interface SystemConfig {
     name: string
     prefix: string
+    messageLog: boolean
 }
 
 // ─── Config Loader ────────────────────────────────────────────────────────────
@@ -63,7 +64,7 @@ class Config {
             return JSON.parse(raw) as SystemConfig
         } catch (err) {
             logger.error('utils/system-config', `Failed to load system-config.json — using defaults`)
-            return { name: 'Hoshino', prefix: '/' }
+            return { name: 'Hoshino', prefix: '/', messageLog: true }
         }
     }
 

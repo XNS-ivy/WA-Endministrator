@@ -7,6 +7,7 @@ import { Boom } from '@hapi/boom'
 import { existsSync, unlinkSync } from 'fs'
 import { registerMessageProcessing } from '@modules/baileys/message-processing'
 import type { ConnectionState } from 'baileys'
+import { config } from '@utils/system-config'
 
 class Whatsapp {
     private sock: ReturnType<typeof makeWASocket> | null = null
@@ -88,24 +89,39 @@ class Whatsapp {
 
         registerMessageProcessing(this.sock, {
             onMessage: async (parsed) => {
-                // TODO: dispatch ke command handler
-                if(parsed.commandContent?.cmd!){
-                    console.log('trigger command processing')
+                const { commandContent, isOwner, ownerRole, isAdmin, lid, remoteJid } = parsed
+
+                // ── Self-message guard ────────────────────────────────────────
+                // Ignore messages sent by the bot itself
+                const botLid = this.sock?.user?.lid ?? this.sock?.user?.id
+                if (botLid && lid === botLid) return
+
+                // ── Command dispatch ──────────────────────────────────────────
+                if (commandContent?.cmd && (config.get('messageLog') === true)) {
+                    logger.debug('/modules/baileys/main.ts', {
+                        cmd: commandContent.cmd,
+                        args: commandContent.args,
+                        isOwner,
+                        ownerRole,
+                        isAdmin,
+                        remoteJid,
+                    })
+                    return
                 }
             },
 
             onRevoke: async ({ remoteJid, deletedMessageId, revokedBy }) => {
                 // TODO: anti-delete
-                logger.info('/modules/baileys/main.ts', 'deleted message')
+                // logger.info('/modules/baileys/main.ts', 'deleted message')
             },
 
             onEdit: async ({ remoteJid, originalMessageId, newText, editorJid }) => {
                 // TODO: anti-edit but its still [object]
-                logger.info('/modules/baileys/main.ts', `edited message`)
+                // logger.info('/modules/baileys/main.ts', `edited message`)
             },
 
             onEphemeralSetting: async ({ remoteJid, ephemeralExpiration }) => {
-                logger.info('//modules/baileys/main.ts', `Disappearing messages: ${ephemeralExpiration}s in ${remoteJid}`)
+                // logger.info('//modules/baileys/main.ts', `Disappearing messages: ${ephemeralExpiration}s in ${remoteJid}`)
             },
 
             onProtocolOther: async ({ type, remoteJid }) => {
