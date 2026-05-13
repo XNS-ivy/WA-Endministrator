@@ -182,7 +182,7 @@ export function registerMessageProcessing(
 
         for (const msg of messages) {
             try {
-                await processOne(msg, callbacks)
+                await processOne(msg, callbacks, sock)
             } catch (err) {
                 logger.error(
                     '/modules/baileys/message-processing.ts',
@@ -199,7 +199,7 @@ export function registerMessageProcessing(
 
 async function processOne(
     msg: WAMessage,
-    callbacks: IMessageProcessingCallbacks
+    callbacks: IMessageProcessingCallbacks, sock: WASocket
 ): Promise<void> {
     const { message, key } = msg
     if (!message || !key.remoteJid) return
@@ -222,7 +222,7 @@ async function processOne(
     // ── Regular messages ──────────────────────────────────────────────────────
     if (!callbacks.onMessage) return
 
-    const parsed = await msgParser.fetch(msg)
+    const parsed = await msgParser.fetch(msg, sock)
     if (parsed) await callbacks.onMessage(parsed)
 }
 

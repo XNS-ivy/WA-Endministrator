@@ -1,4 +1,4 @@
-import { type WAMessage, type proto, type WAMessageKey, getContentType } from "baileys"
+import { type WAMessage, type proto, type WAMessageKey, getContentType, type WASocket } from "baileys"
 import { config } from "@utils/system-config"
 
 
@@ -37,7 +37,7 @@ export class MessageParse {
      * }
      * ```
      */
-    async fetch(msg: WAMessage): Promise<IMessageFetch | null> {
+    async fetch(msg: WAMessage, sock: WASocket): Promise<IMessageFetch | null> {
 
         const { key, pushName, message } = msg
         const rawMessage = unwrapMessage(message as proto.IMessage)
@@ -96,7 +96,7 @@ export class MessageParse {
         const quoted = quotedMessage
             ? await this.quotedMessageFetch(quotedMessage)
             : null
-        const isOnGroup = remoteJid.endsWith('@g.us') ? true : false
+        const isOnGroup = remoteJid.endsWith('@g.us') ? (await sock.groupMetadata(remoteJid)).id : false
         const prefix = config.get('prefix')
         const body: string = textMsg ?? caption ?? ""
         let commandContent: null | { cmd: string; args: string[] } = null
@@ -203,7 +203,7 @@ interface IKeyFetch {
 
 export interface IMessageFetch extends IKeyFetch {
     pushName: string | null | undefined,
-    isOnGroup: boolean
+    isOnGroup: string | false
     messageTimestamp: number,
     type: keyof proto.IMessage,
     messageObject?: string,
